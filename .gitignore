@@ -1,0 +1,6 @@
+out/
+*.exe
+*.pdb
+*.tmp
+dist/
+*.exe.config
