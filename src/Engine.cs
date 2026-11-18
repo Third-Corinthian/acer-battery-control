@@ -19,6 +19,13 @@ namespace AcerBatteryControl
         readonly CalibrationGuards guards;
         readonly IBatteryHardware hardware;
         readonly Action<int> delay;
+        readonly Func<long> milliseconds;
+        long? lastValidSafetyAt;
+        long? missingSafetySince;
+        bool fastCalibrationPoll, criticalSuspended;
+        int floorReadings;
+        int? loggedFallbackFloor;
+        int telemetryErrors;
 
         HealthStatus hw;
         bool hwValidNow;
@@ -61,16 +68,28 @@ namespace AcerBatteryControl
         }
 
         internal Engine(Config config, IBatteryHardware device, CalibrationGuards protection, Action<int> wait)
+            : this(config, device, protection, wait,
+                delegate { return (long)(System.Diagnostics.Stopwatch.GetTimestamp() * (1000.0 / System.Diagnostics.Stopwatch.Frequency)); })
+        {
+        }
+
+        internal Engine(Config config, IBatteryHardware device, CalibrationGuards protection, Action<int> wait, Func<long> clock)
         {
             cfg = config;
             hardware = device;
             guards = protection;
             delay = wait;
+            milliseconds = clock;
         }
 
         public bool IsCalibrating
         {
             get { lock (sync) { return cfg.Calibrating; } }
+        }
+
+        public int CalibrationPollSeconds
+        {
+            get { lock (sync) { return fastCalibrationPoll ? CalibrationSafety.FastPollSeconds : CalibrationSafety.PollSeconds; } }
         }
 
         public void Startup()
@@ -79,14 +98,16 @@ namespace AcerBatteryControl
             {
                 Log.Write("[service] starting v" + Paths.Version + ", desired limit: " + Util.OnOff(cfg.LimitDesired)
                           + (cfg.Calibrating ? ", calibration marked as in progress" : ""));
-                // Recover the lid journal even after a crash during calibration.
-                guards.RestoreLid(cfg);
                 // defaults must not erase a missing or invalid journal: rewrite it
                 // with recovery_unknown set, which uninstall rejects without --force.
                 string why;
-                if (Config.LoadStrict(out why) == null && !cfg.RecoveryUnknown)
+                bool invalidJournal = Config.LoadStrict(out why) == null;
+                if (invalidJournal) cfg.RecoveryUnknown = true;
+                // Recover both journals even after a crash during calibration.
+                guards.RestoreCritical(cfg);
+                guards.RestoreLid(cfg);
+                if (invalidJournal)
                 {
-                    cfg.RecoveryUnknown = true;
                     try { cfg.Save(); Log.Write("[service] WARNING: invalid journal (" + why + "), recovery state unknown"); }
                     catch (Exception ex) { Log.Write("[service] cannot rewrite config.ini: " + ex.Message); }
                 }
@@ -117,6 +138,9 @@ namespace AcerBatteryControl
                 try
                 {
                     CheckRunning();
+                    // Sample independently of firmware success and of STATUS/display caches.
+                    Telemetry safety = cfg.Calibrating ? ReadSafetyTelemetry() : null;
+                    if (!cfg.Calibrating) guards.Release(cfg);
                     HealthStatus a = hardware.GetStatus();
                     if (!a.Valid) return Invalid(origin, a);
 
@@ -128,6 +152,7 @@ namespace AcerBatteryControl
                         if (!b.Valid) return Invalid(origin, b);
                         if (!Coherent(a, b))
                         {
+                            floorReadings = 0;
                             inconsistentStreak++;
                             if (inconsistentStreak == 1 || inconsistentStreak % 10 == 0)
                                 Log.Write("[" + origin + "] inconsistent firmware reads, retrying (" + inconsistentStreak + ")");
@@ -147,9 +172,10 @@ namespace AcerBatteryControl
                     {
                         CheckRunning();
                         guards.Acquire(cfg);
+                        if (safety == null) safety = ReadSafetyTelemetry();
+                        MonitorCalibration(safety);
                         return false;
                     }
-                    guards.Release(cfg); // Retry a previously failed restore.
                     if (!a.HealthSupported)
                     {
                         SetError("The firmware does not report support for the 80% limit.");
@@ -164,6 +190,7 @@ namespace AcerBatteryControl
                 }
                 catch (Exception ex)
                 {
+                    floorReadings = 0;
                     hwValidNow = false;
                     errorStreak++;
                     SetError(ex.Message);
@@ -176,6 +203,7 @@ namespace AcerBatteryControl
 
         bool Invalid(string origin, HealthStatus h)
         {
+            floorReadings = 0;
             invalidStreak++;
             hwValidNow = false;
             if (invalidStreak == 1 || invalidStreak % 10 == 0)
@@ -211,6 +239,7 @@ namespace AcerBatteryControl
             if (cfg.Calibrating && !a.CalibOn)
             {
                 cfg.Calibrating = false;
+                ResetSafety();
                 try { cfg.Save(); }
                 finally { guards.Release(cfg); }
                 Log.Write("[" + origin + "] calibration no longer active in firmware (completed or stopped): resuming limit control");
@@ -219,6 +248,7 @@ namespace AcerBatteryControl
             else if (!cfg.Calibrating && a.CalibOn)
             {
                 cfg.Calibrating = true;
+                ResetSafety();
                 cfg.CalibStartedUtc = DateTime.UtcNow;
                 cfg.Save();
                 Log.Write("[" + origin + "] calibration detected (started outside this app): limit suspended");
@@ -278,6 +308,7 @@ namespace AcerBatteryControl
                 if (a.CalibOn)
                 {
                     guards.Acquire(cfg);
+                    MonitorCalibration(ReadSafetyTelemetry());
                     return "Setting saved: it will be applied when calibration ends.";
                 }
                 if (!a.HealthSupported) throw new AcerException("The firmware does not support the 80% limit.");
@@ -297,36 +328,48 @@ namespace AcerBatteryControl
                 if (t.OnAC != true) throw new AcerException("Connect the AC adapter before starting calibration.");
                 HealthStatus a = ReadConfirmed();
                 if (!a.CalibSupported) throw new AcerException("The firmware does not support calibration.");
-                RequestWork();
-                if (a.CalibOn)
+                try
                 {
-                    SyncCalibration(a, "manual");
+                    if (a.CalibOn)
+                    {
+                        SyncCalibration(a, "manual");
+                        guards.Acquire(cfg);
+                        MonitorCalibration(ReadSafetyTelemetry());
+                        return "Calibration already in progress.";
+                    }
+                    // Persist intent before writing: an uncertain outcome does not release the guards.
+                    cfg.Calibrating = true;
+                    ResetSafety();
+                    cfg.CalibStartedUtc = DateTime.UtcNow;
+                    cfg.Save();
                     guards.Acquire(cfg);
-                    return "Calibration already in progress.";
+                    Telemetry safety = ReadSafetyTelemetry();
+                    if (CalibrationSafety.Valid(safety)) guards.UpdateCritical(cfg, safety.OnAC == true);
+                    CheckRunning();
+                    int ret = hardware.SetMode(AcerWmi.ModeCalibration, true);
+                    delay(500);
+                    HealthStatus after = hardware.GetStatus();
+                    if (!after.Valid || !after.CalibOn)
+                    {
+                        Log.Write("[manual] calibration start rejected by firmware (uReturn=" + ret + ", " + after.Raw + ")");
+                        throw new AcerException("The firmware did not start calibration (uReturn=" + ret + ").");
+                    }
+                    SetHw(after);
+                    lastAc = t.OnAC;
+                    Log.Write("[manual] calibration started (uReturn=" + ret + "), 80% limit suspended");
+                    RaiseEvent("Calibration started. Keep the PC on and connected to the AC adapter.");
+                    return "Calibration started.";
                 }
-                // Persist intent before writing: an uncertain outcome does not release the guards.
-                cfg.Calibrating = true;
-                cfg.CalibStartedUtc = DateTime.UtcNow;
-                cfg.Save();
-                guards.Acquire(cfg);
-                CheckRunning();
-                int ret = hardware.SetMode(AcerWmi.ModeCalibration, true);
-                delay(500);
-                HealthStatus after = hardware.GetStatus();
-                if (!after.Valid || !after.CalibOn)
-                {
-                    Log.Write("[manual] calibration start rejected by firmware (uReturn=" + ret + ", " + after.Raw + ")");
-                    throw new AcerException("The firmware did not start calibration (uReturn=" + ret + ").");
-                }
-                SetHw(after);
-                lastAc = t.OnAC;
-                Log.Write("[manual] calibration started (uReturn=" + ret + "), 80% limit suspended");
-                RaiseEvent("Calibration started. Keep the PC on and connected to the AC adapter.");
-                return "Calibration started.";
+                finally { RequestWork(); } // Uses the cadence chosen by fresh start telemetry, also on an uncertain start.
             }
         }
 
         public string StopCalibration()
+        {
+            return StopCalibration(false);
+        }
+
+        string StopCalibration(bool safetyFloor)
         {
             lock (sync)
             {
@@ -342,15 +385,24 @@ namespace AcerBatteryControl
                     if (!after.Valid || after.CalibOn)
                         throw new AcerException("The firmware did not stop calibration (uReturn=" + ret + ").");
                     SetHw(after);
-                    Log.Write("[manual] calibration stopped (uReturn=" + ret + ")");
+                    Log.Write("[" + (safetyFloor ? "safety floor" : "manual") + "] calibration stopped (uReturn=" + ret + ")");
                 }
                 bool was = cfg.Calibrating;
                 cfg.Calibrating = false;
+                ResetSafety();
                 try { cfg.Save(); }
+                catch
+                {
+                    if (safetyFloor)
+                        RaiseEvent("WARNING: Calibration stopped at the safety floor. Power settings and the 80% limit need recovery verification.");
+                    throw;
+                }
                 finally { guards.Release(cfg); }
-                if (was) RaiseEvent("Calibration stopped.");
-
                 Enforce("calibration end");
+                if (safetyFloor)
+                    RaiseEvent("WARNING: Calibration stopped at the safety floor so charging can resume. "
+                        + (lastError.Length == 0 ? "80% limit control resumed." : "80% limit needs verification."));
+                else if (was) RaiseEvent("Calibration stopped.");
                 if (lastError.Length > 0) throw new AcerException("Calibration stopped; limit needs verification: " + lastError);
                 return "Calibration stopped, 80% limit restored to the desired setting.";
             }
@@ -362,6 +414,79 @@ namespace AcerBatteryControl
             {
                 try { CheckRunning(); ReadTelemetry(true); } catch { }
             }
+        }
+
+        void ResetSafety()
+        {
+            floorReadings = 0;
+            fastCalibrationPoll = false;
+            criticalSuspended = false;
+            lastValidSafetyAt = missingSafetySince = null;
+            loggedFallbackFloor = null;
+            telemetryErrors = 0;
+        }
+
+        Telemetry ReadSafetyTelemetry()
+        {
+            Telemetry t = null;
+            try { CheckRunning(); t = hardware.ReadStandard(); }
+            catch (Exception ex)
+            {
+                telemetryErrors++;
+                if (telemetryErrors == 1 || telemetryErrors % 10 == 0)
+                    Log.Write("[calibration] safety telemetry unavailable: " + ex.Message + " (" + telemetryErrors + ")");
+            }
+            long now = milliseconds();
+            if (CalibrationSafety.Valid(t))
+            {
+                lastValidSafetyAt = now;
+                missingSafetySince = null;
+                telemetryErrors = 0;
+                fastCalibrationPoll = t.Percent <= CalibrationSafety.FastPollPercent;
+            }
+            else
+            {
+                floorReadings = 0;
+                // Unknown charge may conceal a descent below 10%; use the fast cadence as well.
+                fastCalibrationPoll = true;
+                if (!missingSafetySince.HasValue) missingSafetySince = lastValidSafetyAt ?? now;
+                if (now - missingSafetySince.Value > CalibrationSafety.TelemetryTimeoutSeconds * 1000L)
+                {
+                    if (!criticalSuspended)
+                    {
+                        criticalSuspended = true;
+                        Log.Write("[calibration] WARNING: valid telemetry missing for more than two minutes; restoring Windows critical battery protection");
+                        RaiseEvent("WARNING: Calibration telemetry unavailable. Restoring Windows critical battery protection; Windows may sleep or shut down.");
+                    }
+                    guards.RestoreCritical(cfg); // Retry failures; never disable again during this calibration.
+                }
+            }
+            return t ?? new Telemetry();
+        }
+
+        void MonitorCalibration(Telemetry t)
+        {
+            if (!CalibrationSafety.Valid(t)) { floorReadings = 0; return; }
+            guards.UpdateCritical(cfg, !criticalSuspended && t.OnAC == true);
+            int floor = CalibrationSafety.FloorPercent;
+            if (!guards.CriticalProtected)
+            {
+                floor = guards.CriticalLevel.HasValue
+                    ? Math.Min(CalibrationSafety.MaximumPercent, Math.Max(floor, guards.CriticalLevel.Value + CalibrationSafety.FallbackMarginPercent))
+                    : CalibrationSafety.MaximumPercent;
+                if (loggedFallbackFloor != floor)
+                {
+                    loggedFallbackFloor = floor;
+                    Log.Write("[calibration] critical action guard unavailable: fallback safety floor " + floor + "%"
+                        + (guards.CriticalLevel.HasValue ? " (critical level plus margin)" : " (critical level unreadable; stop on confirmed discharge)"));
+                }
+            }
+            else loggedFallbackFloor = null;
+            if (t.Percent <= floor) fastCalibrationPoll = true;
+            if (CalibrationSafety.Discharging(t) && t.Percent <= floor) floorReadings++;
+            else floorReadings = 0;
+            if (floorReadings >= CalibrationSafety.RequiredReadings)
+                StopCalibration(true); // Same confirmation, write and readback as the manual stop.
         }
 
         // ------------------------------------------------------------------ state
@@ -491,6 +616,7 @@ namespace AcerBatteryControl
                 }
                 kv("limit_desired", Util.OnOff(cfg.LimitDesired));
                 kv("calibrating", cfg.Calibrating ? "1" : "0");
+                kv("power_restore_pending", cfg.SavedLidAction >= 0 || cfg.SavedCritAction >= 0 ? "1" : "0");
                 kv("calib_started", cfg.CalibStartedUtc == DateTime.MinValue ? "" : cfg.CalibStartedUtc.ToLocalTime().ToString("o", Util.Inv));
                 kv("percent", N(t.Percent));
                 kv("on_ac", Bo(t.OnAC));

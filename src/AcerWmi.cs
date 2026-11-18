@@ -258,8 +258,9 @@ namespace AcerBatteryControl
             string model = (S(stat, "ManufactureName") + " " + S(stat, "DeviceName")).Trim();
             t.Model = model;
 
-            if (t.RemainingMwh.HasValue && t.FullMwh.HasValue && t.FullMwh.Value > 0)
-                t.Percent = Math.Max(0, Math.Min(100, (int)Math.Round(t.RemainingMwh.Value * 100.0 / t.FullMwh.Value)));
+            if (t.RemainingMwh.HasValue && t.FullMwh.HasValue && t.FullMwh.Value > 0
+                && t.RemainingMwh.Value >= 0 && t.RemainingMwh.Value <= t.FullMwh.Value)
+                t.Percent = (int)Math.Round(t.RemainingMwh.Value * 100.0 / t.FullMwh.Value);
             if (!t.Percent.HasValue)
                 using (ManagementBaseObject fallback = First(@"root\cimv2", "Win32_Battery", permit))
                     t.Percent = I(fallback, "EstimatedChargeRemaining");
@@ -276,11 +277,14 @@ namespace AcerBatteryControl
         }
     }
 
-    // Power plan: lid close action on AC power and system wake request.
+    // Power plan: AC-only calibration guards and system wake request. Never write DC settings.
     static class Power
     {
         static Guid SubButtons = new Guid("4f971e89-eebd-4455-a8de-9e59040e7347");
         static Guid LidAction = new Guid("5ca83367-6e45-459f-a27b-476b1d01c936");
+        static Guid SubBattery = new Guid("e73a048d-bf27-4f12-9731-8b2076e8891f");
+        static Guid CriticalAction = new Guid("637ea02f-bbcb-4015-8e2c-a1c7b9c0b546");
+        static Guid CriticalLevel = new Guid("9a66d8d7-4ff7-4ef9-b5a2-5a326ca2a469");
 
         [DllImport("powrprof.dll")]
         static extern uint PowerGetActiveScheme(IntPtr userRootPowerKey, out IntPtr activePolicyGuid);
@@ -359,6 +363,30 @@ namespace AcerBatteryControl
             return h;
         }
 
+        public static uint ReadAcCriticalAction(Guid scheme)
+        {
+            uint v;
+            Check(PowerReadACValueIndex(IntPtr.Zero, ref scheme, ref SubBattery, ref CriticalAction, out v), "PowerReadACValueIndex");
+            if (v > 3) throw new AcerException("Invalid critical battery action.");
+            return v;
+        }
+
+        public static uint ReadAcCriticalLevel(Guid scheme)
+        {
+            uint v;
+            Check(PowerReadACValueIndex(IntPtr.Zero, ref scheme, ref SubBattery, ref CriticalLevel, out v), "PowerReadACValueIndex");
+            if (v > CalibrationSafety.MaximumPercent) throw new AcerException("Invalid critical battery level.");
+            return v;
+        }
+
+        public static void WriteAcCriticalAction(Guid scheme, uint value)
+        {
+            DryRun.Guard("critical battery action (AC) = " + value);
+            Check(PowerWriteACValueIndex(IntPtr.Zero, ref scheme, ref SubBattery, ref CriticalAction, value), "PowerWriteACValueIndex");
+            Guid active = ActiveScheme();
+            if (active == scheme) Check(PowerSetActiveScheme(IntPtr.Zero, ref active), "PowerSetActiveScheme");
+        }
+
         public static void Release(IntPtr h)
         {
             if (h == IntPtr.Zero) return;
@@ -373,6 +401,9 @@ namespace AcerBatteryControl
         public virtual Guid ActiveScheme() { return Power.ActiveScheme(); }
         public virtual uint ReadAcLid(Guid scheme) { return Power.ReadAcLid(scheme); }
         public virtual void WriteAcLid(Guid scheme, uint value) { Power.WriteAcLid(scheme, value); }
+        public virtual uint ReadAcCriticalAction(Guid scheme) { return Power.ReadAcCriticalAction(scheme); }
+        public virtual uint ReadAcCriticalLevel(Guid scheme) { return Power.ReadAcCriticalLevel(scheme); }
+        public virtual void WriteAcCriticalAction(Guid scheme, uint value) { Power.WriteAcCriticalAction(scheme, value); }
         public virtual IntPtr KeepAwake() { return Power.KeepAwake("Acer battery calibration in progress"); }
         public virtual void Release(IntPtr request) { Power.Release(request); }
     }
@@ -384,6 +415,9 @@ namespace AcerBatteryControl
         IntPtr request = IntPtr.Zero;
         readonly PowerAccess power;
         int awakeErrors, lidErrors, restoreErrors;
+        int criticalErrors, criticalRestoreErrors;
+        public bool CriticalProtected { get; private set; }
+        public int? CriticalLevel { get; private set; }
 
         public CalibrationGuards() : this(new PowerAccess()) { }
         internal CalibrationGuards(PowerAccess access) { power = access; }
@@ -448,7 +482,81 @@ namespace AcerBatteryControl
                 request = IntPtr.Zero;
                 Log.Write("[calibration] automatic sleep allowed again");
             }
-            RestoreLid(cfg);
+            try { RestoreCritical(cfg); }
+            finally { RestoreLid(cfg); }
+        }
+
+        public virtual void UpdateCritical(Config cfg, bool allowOverride)
+        {
+            bool previouslyProtected = CriticalProtected;
+            CriticalProtected = false;
+            CriticalLevel = null;
+            try
+            {
+                Guid scheme = power.ActiveScheme();
+                CriticalLevel = (int)power.ReadAcCriticalLevel(scheme);
+                // Restore the old scheme before journaling another; a failed restore keeps its identity.
+                if (cfg.SavedCritAction >= 0 && cfg.SavedCritScheme != scheme.ToString()) RestoreCritical(cfg);
+                if (!allowOverride)
+                {
+                    RestoreCritical(cfg);
+                    return;
+                }
+                if (cfg.SavedCritAction >= 0 && cfg.SavedCritScheme != scheme.ToString())
+                    throw new AcerException("Previous power scheme still needs critical-action recovery.");
+                bool journalNew = false;
+                if (cfg.SavedCritAction < 0)
+                {
+                    cfg.SavedCritAction = (int)power.ReadAcCriticalAction(scheme);
+                    cfg.SavedCritScheme = scheme.ToString();
+                    journalNew = true;
+                }
+                bool changed = power.ReadAcCriticalAction(scheme) != 0;
+                bool write = changed || !previouslyProtected;
+                // The backup must reach disk before every write attempt (also after a failed save);
+                // steady polls with nothing to write do not rewrite the journal.
+                if (journalNew || write) cfg.Save();
+                if (write)
+                {
+                    power.WriteAcCriticalAction(scheme, 0);
+                }
+                if (power.ReadAcCriticalAction(scheme) != 0 || power.ActiveScheme() != scheme)
+                    throw new AcerException("Critical battery action was not applied to the active scheme.");
+                if (changed) Log.Write("[calibration] critical battery action (plugged in): Do nothing");
+                CriticalProtected = true;
+                criticalErrors = 0;
+            }
+            catch (Exception ex)
+            {
+                Error(ref criticalErrors, "[calibration] cannot guard critical battery action: " + ex.Message);
+                RestoreCritical(cfg); // A write may have succeeded before apply/readback failed.
+            }
+        }
+
+        public virtual void RestoreCritical(Config cfg)
+        {
+            CriticalProtected = false;
+            if (cfg.SavedCritAction < 0) return;
+            int saved = cfg.SavedCritAction;
+            string scheme = cfg.SavedCritScheme;
+            try
+            {
+                if (saved > 3) throw new AcerException("Invalid saved critical battery action.");
+                power.WriteAcCriticalAction(new Guid(scheme), (uint)saved);
+                if (power.ReadAcCriticalAction(new Guid(scheme)) != (uint)saved)
+                    throw new AcerException("Critical battery action restore could not be verified.");
+                cfg.SavedCritAction = -1;
+                cfg.SavedCritScheme = "";
+                cfg.Save();
+                criticalRestoreErrors = 0;
+                Log.Write("[calibration] critical battery action (plugged in) restored to " + CalibrationSafety.ActionName((uint)saved));
+            }
+            catch (Exception ex)
+            {
+                cfg.SavedCritAction = saved;
+                cfg.SavedCritScheme = scheme;
+                Error(ref criticalRestoreErrors, "[calibration] critical battery action restore failed, backup retained: " + ex.Message);
+            }
         }
 
         public virtual void RestoreLid(Config cfg)

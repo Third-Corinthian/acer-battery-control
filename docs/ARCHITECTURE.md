@@ -86,7 +86,7 @@ Enforcement:
 | `ResumeAutomatic` / `ResumeSuspend` | 20 s | `resume` |
 | `PowerStatusChange` | 5 s (and telemetry immediately) | `power` |
 | Firmware not ready or error | 60 s | `retry` |
-| Calibration in progress | 60 s | `calibration` |
+| Calibration in progress | 60 s; 15 s at or below 10%, at the fallback floor, or with invalid telemetry | `calibration` |
 | Steady state | 30 min | `periodic` |
 | IPC command `ENFORCE` | immediately | `manual` |
 
@@ -109,15 +109,42 @@ with "Acer" or "Care Center" in their name) are for diagnosis.
   guards; after the write it verifies by reading again. An uncertain outcome keeps the intent and the guards.
 - **Guards** (`CalibrationGuards`):
   - `PowerCreateRequest`/`PowerSetRequest(SystemRequired)` to block automatic sleep;
-  - "lid close" action on AC power set to 0 (do nothing) on the active scheme.
-    The original value and the scheme are saved in `config.ini` (`saved_lid_*`).
+  - "lid close" action on AC power set to 0 (do nothing) on the active scheme;
+  - critical-battery action on AC power set to 0 with valid telemetry, saved before the write and read back afterward.
+    The AC critical level is only read. DC settings are never changed.
+    The original values and schemes are saved in `config.ini` (`saved_lid_action`, `saved_lid_scheme`,
+    `saved_crit_action`, `saved_crit_scheme`). An action of -1 and empty scheme mean no restore is pending.
 - **Release**: at the end of the calibration, on interruption, when the service stops and when Windows shuts
-  down. At startup the lid journal is recovered even when a calibration is marked as in progress.
+  down. At startup both power-setting journals are recovered even when calibration is marked as in progress.
   A write or save error keeps the backup for the next attempt; an error saving the final state does not
-  skip the release of the guards. The calibration intent and the lid backup are persisted before the
+  skip the release of the guards. The calibration intent and each power-setting backup are persisted before the
   respective writes.
 - **End of calibration**: detected by the 60 s polling, when the firmware reports calibration off.
   Normal enforcement then resumes.
+- **Warning**: the tray confirmation and CLI start output share `CalibrationSafety.Warning`, using read-only
+  `PowerAccess` reads of the active scheme's AC action and critical level before sending the existing start command.
+- **Safety floor**: each enforcement pass with calibration active samples Windows battery telemetry independently
+  of the display cache and firmware sensors. Percentage must be 0–100, AC state known and rate or charging/discharging
+  flags available. Positive rate or a charging flag takes precedence over a stale discharging flag. Discharge means
+  a negative rate on AC or an explicit discharging flag. Two consecutive valid samples at or below 3% trigger the
+  existing `StopCalibration` path: two consistent firmware reads, calibration-only write, readback, release guards,
+  then ordinary confirmed limit enforcement. Invalid telemetry, invalid/inconsistent firmware, errors, a higher
+  percentage or charging evidence reset the sample count. The final warning event follows limit enforcement so
+  a correction event cannot hide it. The limit is never written while calibration is recorded active.
+- **Fallback**: failure to journal, write, apply or verify the AC critical action selects the current critical level
+  plus two percentage points, bounded to 3–100%. If the level cannot be read, the floor is 100%: do not suppress
+  Windows protection, stop on two valid discharge readings. Floor changes are logged once. Power writes that may
+  have partially succeeded are restored; a failed restore keeps its original journal. On a scheme change, restore
+  the old scheme before saving the new one; failure leaves the old backup intact and uses the fallback floor.
+- **Telemetry loss**: no firmware stop on invalid/missing data. A monotonic clock tracks the last valid service
+  sample. After more than 120 seconds without valid data, restore the critical action and retry failures at the
+  fast cadence, even if firmware reads also fail. Suppression stays disabled for the remainder of the calibration;
+  valid data returning uses the fallback floor. This also applies above 10% or with unknown charge, because a hidden
+  discharge may cross the low-charge threshold. Until the deadline the existing override is retained, but invalid
+  data never acquires a new override. Windows protection takes priority over completing calibration.
+- **Constants**: `CalibrationSafety` contains the 3% floor, two-point fallback margin, 10% fast-poll threshold,
+  15/60-second cadences, two required readings and 120-second timeout. `BatteryService` retains its one-shot timer
+  and earlier-deadline scheduling. Calibration retries also use the fast cadence when appropriate.
 - **AC adapter unplugged during calibration**: detected by comparing `lastAc` with the telemetry.
   It raises a "WARNING" notification, which the tray shows with the warning icon.
 - As in acerctl, the 80% limit is not touched. Observed on the AN515-55: during calibration the firmware
@@ -154,6 +181,7 @@ with "Acer" or "Care Center" in their name) are for diagnosis.
 | `health_supported`, `calib_supported`, `health_on`, `calib_on` | firmware state |
 | `fw_raw` | raw read, for diagnosis |
 | `limit_desired` (`on`/`off`), `calibrating`, `calib_started` (local ISO 8601) | app state |
+| `power_restore_pending` | either lid or critical-action journal still needs restoration; used to block tray service stop |
 | `percent`, `on_ac`, `charging`, `discharging` | charge |
 | `rate_mw` | + charging, − discharging |
 | `voltage_mv`, `current_ma` (signed), `temp_c` | sensors |
@@ -213,7 +241,7 @@ are blocked as well.
 - **Service** (`ServiceInfo`): state read from SCM, not from the pipe. A single function decides Stop
   (running), Start (stopped) or no action (transitioning, not installed) for menu and panel. Start and
   stop go through elevated `sc.exe` (UAC); the outcome is the exit code plus the SCM state reached. Before
-  stopping, the state is read again: with `calibrating` or `calib_on` the stop is refused.
+  stopping, the state is read again: with `calibrating`, `calib_on` or `power_restore_pending` the stop is refused.
 - The IPC client sends a command only if `GetNamedPipeServerProcessId` matches the service PID
   according to SCM, so a process squatting on the pipe name does not receive commands.
 - The tooltip text is truncated to 63 characters, the NotifyIcon limit in .NET Framework.
@@ -253,15 +281,21 @@ are blocked as well.
 `Uninstall(force)` refuses, restarting the service if it had stopped it, when: a calibration is present (in the
 service or in the firmware, read directly while the service is stopped); the service is running but not
 responding; the journal (`config.ini`) is missing, invalid, sits in an untrusted folder or reports a pending
-lid restore. A lost journal is marked by the service with `recovery_unknown=1` and never becomes "safe" again
-by itself: `uninstall --force` is required, which skips the journal but never the firmware calibration check.
+lid or critical-action restore. Strict parsing rejects incomplete critical-action pairs, invalid actions/schemes
+and duplicate keys; legacy journals with both critical keys absent remain readable. A lost journal is marked by
+the service with `recovery_unknown=1` and never becomes "safe" again
+by itself: `uninstall --force` is required after manually checking both AC actions. It skips journal restrictions
+and accepts unreadable firmware state, but never bypasses calibration reported active by the service or firmware.
 It does not change the firmware state. When launched from the installation folder, it deletes it after a few seconds.
 
 ## Open decisions / TODO
 
-- Windows' critical-battery action (for example hibernate at 5%) ends calibration before the end of the
-  discharge. Options: warn before starting, showing the current action and level; or change it temporarily
-  with a journal and restore, like the lid action (risk: abrupt power-off at 0%).
+- Validate the 3% floor on hardware: charging resumption after an early confirmed stop, gauge accuracy without
+  the firmware's final calibration recharge, and margin for rapid discharge or slow driver calls. The AC guard
+  cannot prevent firmware cutoff, manual shutdown, policy interference or discharge while the service is absent.
+- The critical setting and subgroup GUIDs follow Microsoft's [critical battery action](https://learn.microsoft.com/en-us/windows-hardware/customize/power-settings/battery-settings-critical-battery-action)
+  and [critical battery threshold](https://learn.microsoft.com/en-us/windows-hardware/customize/power-settings/battery-settings-critical-battery-threshold)
+  definitions. Real power-plan apply/restore and policy interactions still require manual validation.
 - Code signing: the executables are not signed and SmartScreen warns.
 - Possible addition: blocking user-requested sleep during calibration. Today only automatic sleep
   is blocked.

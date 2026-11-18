@@ -19,7 +19,7 @@ namespace AcerBatteryControl
         public const string PipeName = "AcerBatteryControl";
         public const string GuiExeName = "AcerBatteryControl.exe";
         public const string CliExeName = "acerbat.exe";
-        public const string Version = "2.1.0";
+        public const string Version = "2.2.0";
 
         // ACERBAT_DATADIR redirects config and log (tests only: the service does not receive it from the user).
         public static readonly string DataDir = DataDirFromEnv();
@@ -213,6 +213,8 @@ namespace AcerBatteryControl
         public DateTime CalibStartedUtc = DateTime.MinValue;
         public int SavedLidAction = -1;     // -1 = no saved value
         public string SavedLidScheme = "";
+        public int SavedCritAction = -1;
+        public string SavedCritScheme = "";
         // the journal was lost or unreadable. Persists until an explicit uninstall
         // (--force) accepts it; no service startup can turn it into "no recovery needed".
         public bool RecoveryUnknown = false;
@@ -245,6 +247,13 @@ namespace AcerBatteryControl
                             if (int.TryParse(v, NumberStyles.Integer, Util.Inv, out n)) c.SavedLidAction = n;
                             break;
                         case "saved_lid_scheme": c.SavedLidScheme = v; break;
+                        case "saved_crit_action":
+                            int critical;
+                            if (int.TryParse(v, NumberStyles.Integer, Util.Inv, out critical) && critical >= -1 && critical <= 3)
+                                c.SavedCritAction = critical;
+                            else c.RecoveryUnknown = true;
+                            break;
+                        case "saved_crit_scheme": c.SavedCritScheme = v; break;
                         case "recovery_unknown": c.RecoveryUnknown = v != "0"; break;
                     }
                 }
@@ -258,12 +267,13 @@ namespace AcerBatteryControl
         }
 
         // read for irreversible decisions (uninstall). Return null, with the reason, if the file
-        // is missing, unreadable, or a recovery field (calibrating, saved_lid_*) is invalid.
+        // is missing, unreadable, or a calibration / power-setting recovery field is invalid.
         public static Config LoadStrict(out string problem)
         {
             problem = null;
             Config c = new Config();
-            bool hasCal = false, hasLid = false;
+            bool hasCal = false, hasLid = false, hasCrit = false, hasCritScheme = false;
+            HashSet<string> keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             try
             {
                 if (!File.Exists(Paths.ConfigFile)) { problem = "config.ini missing"; return null; }
@@ -275,6 +285,7 @@ namespace AcerBatteryControl
                     if (eq <= 0) { problem = "invalid line: " + line; return null; }
                     string k = line.Substring(0, eq).Trim().ToLowerInvariant();
                     string v = line.Substring(eq + 1).Trim();
+                    if (!keys.Add(k)) { problem = "duplicate config key: " + k; return null; }
                     if (k == "calibrating")
                     {
                         if (v != "0" && v != "1") { problem = "invalid calibrating value"; return null; }
@@ -287,6 +298,14 @@ namespace AcerBatteryControl
                         c.SavedLidAction = n; hasLid = true;
                     }
                     else if (k == "saved_lid_scheme") c.SavedLidScheme = v;
+                    else if (k == "saved_crit_action")
+                    {
+                        int n;
+                        if (!int.TryParse(v, NumberStyles.Integer, Util.Inv, out n) || n < -1 || n > 3)
+                        { problem = "invalid saved_crit_action value"; return null; }
+                        c.SavedCritAction = n; hasCrit = true;
+                    }
+                    else if (k == "saved_crit_scheme") { c.SavedCritScheme = v; hasCritScheme = true; }
                     else if (k == "recovery_unknown" && v != "0") { problem = "journal previously lost: recovery state unknown"; return null; }
                 }
             }
@@ -294,6 +313,10 @@ namespace AcerBatteryControl
             if (!hasCal || !hasLid) { problem = "config.ini incomplete"; return null; }
             Guid g;
             if (c.SavedLidAction >= 0 && !Guid.TryParse(c.SavedLidScheme, out g)) { problem = "invalid saved_lid_scheme value"; return null; }
+            // Both absent is a legacy journal. A partially present new pair is never accepted.
+            if (hasCrit != hasCritScheme || (c.SavedCritAction >= 0 && !Guid.TryParse(c.SavedCritScheme, out g))
+                || (c.SavedCritAction < 0 && c.SavedCritScheme.Length != 0))
+            { problem = "invalid saved_crit_scheme or incomplete critical-action journal"; return null; }
             return c;
         }
 
@@ -306,6 +329,8 @@ namespace AcerBatteryControl
             sb.AppendLine("calib_started_utc=" + (CalibStartedUtc == DateTime.MinValue ? "" : CalibStartedUtc.ToString("o", Util.Inv)));
             sb.AppendLine("saved_lid_action=" + SavedLidAction.ToString(Util.Inv));
             sb.AppendLine("saved_lid_scheme=" + SavedLidScheme);
+            sb.AppendLine("saved_crit_action=" + SavedCritAction.ToString(Util.Inv));
+            sb.AppendLine("saved_crit_scheme=" + SavedCritScheme);
             if (RecoveryUnknown) sb.AppendLine("recovery_unknown=1");
             Directory.CreateDirectory(Paths.DataDir);
             string tmp = Paths.ConfigFile + ".tmp";

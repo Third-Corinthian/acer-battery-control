@@ -203,7 +203,7 @@ namespace AcerBatteryControl
             string action = ServiceInfo.Action(service);
             miService.Text = action == ServiceInfo.ActionStart ? "Start service…" : "Stop service…";
             miService.Visible = service != ServiceInfo.Absent;
-            miService.Enabled = action != null;
+            miService.Enabled = action != null && !(action == ServiceInfo.ActionStop && StopBlocked(r));
 
             if (!r.Ok)
             {
@@ -312,16 +312,7 @@ namespace AcerBatteryControl
 
         public void StartCalibration()
         {
-            string msg =
-                "Calibration charges the battery to 100%, discharges it while the system is on, then recharges it " +
-                "to restore charge indicator accuracy. This may take several hours.\n\n" +
-                "• Keep the AC adapter connected throughout.\n" +
-                "• Do not shut down, restart or put the PC to sleep: an abrupt interruption may leave the firmware " +
-                "in an abnormal state until the next restart.\n" +
-                "• During calibration, the service blocks automatic sleep and sets the lid close action to " +
-                "\"Do nothing\" when plugged in. All settings are restored when calibration ends.\n" +
-                "• The 80% limit stays suspended until calibration ends, then is reapplied automatically.\n\n" +
-                "Start calibration?";
+            string msg = CalibrationSafety.Warning(new PowerAccess()) + "\n\nStart calibration?";
             if (MessageBox.Show(msg, "Battery calibration", MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2) == DialogResult.Yes)
                 Run("CALIBRATE START", true);
         }
@@ -372,7 +363,7 @@ namespace AcerBatteryControl
                 + "The firmware keeps the current limit setting, but it will no longer be maintained: "
                 + "if another program (such as Acer Care Center) changes it, it will not be restored. "
                 + "The icon turns red until you restart the service from the menu.\n\n"
-                + "Stopping is refused during calibration: stop calibration first.";
+                + "Stopping is refused during calibration or while a power setting restore is pending.";
             if (MessageBox.Show(msg, Paths.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2) != DialogResult.Yes)
                 return;
             RunWork(delegate
@@ -380,8 +371,8 @@ namespace AcerBatteryControl
                 // fresh journal and firmware state immediately before stopping.
                 IpcResult now = Ipc.Call("STATUS", 3000);
                 if (!now.Ok) return new IpcResult { Message = "Cannot read service state: service not stopped (" + now.Message + ")." };
-                if (now.Get("calibrating") == "1" || now.Get("calib_on") == "1")
-                    return new IpcResult { Message = "Calibration in progress: service not stopped. Stop calibration from the menu first." };
+                if (StopBlocked(now))
+                    return new IpcResult { Message = "Calibration or power setting restore pending: service not stopped. Stop calibration and let recovery finish first." };
                 return ScCommand("stop", ServiceInfo.Stopped, "Service stopped.");
             }, true);
         }
@@ -399,6 +390,12 @@ namespace AcerBatteryControl
                 + "Service: " + (service.Length > 0 ? service : ServiceInfo.Unknown) + "\n"
                 + "Data and log: " + Paths.DataDir;
             MessageBox.Show(text, "About", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+
+        internal static bool StopBlocked(IpcResult status)
+        {
+            return status.Get("calibrating") == "1" || status.Get("calib_on") == "1"
+                || status.Get("power_restore_pending") == "1";
         }
 
         void ShowPanel()
@@ -588,7 +585,7 @@ namespace AcerBatteryControl
             svcValue.Font = running ? Font : values[8].Font;
             string action = ServiceInfo.Action(service);   // same rule as the menu
             bService.Text = action == ServiceInfo.ActionStart ? "Start service…" : "Stop service…";
-            bService.Enabled = action != null && !(action == ServiceInfo.ActionStop && calibrating);
+            bService.Enabled = action != null && !(action == ServiceInfo.ActionStop && TrayContext.StopBlocked(r));
             svcWarn.Visible = !running;
             svcWarn.ForeColor = bad;
             svcWarn.Text = service == ServiceInfo.Absent

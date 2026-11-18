@@ -31,6 +31,8 @@ static class ReviewTests
         public override void Acquire(Config cfg) { }
         public override void Release(Config cfg) { Releases++; }
         public override void RestoreLid(Config cfg) { }
+        public override void RestoreCritical(Config cfg) { }
+        public override void UpdateCritical(Config cfg, bool allowOverride) { }
     }
     sealed class FakeHardware : IBatteryHardware
     {
@@ -143,6 +145,9 @@ static class ReviewTests
         public uint Lid = 1;
         public override Guid ActiveScheme() { return Guid.Empty; }
         public override uint ReadAcLid(Guid scheme) { return Lid; }
+        public override uint ReadAcCriticalAction(Guid scheme) { return 0; }
+        public override uint ReadAcCriticalLevel(Guid scheme) { return 5; }
+        public override void WriteAcCriticalAction(Guid scheme, uint value) { }
         public override void WriteAcLid(Guid scheme, uint value)
         {
             Writes++;
@@ -445,6 +450,7 @@ static class ReviewTests
         HardeningTests();
         FirmwareTests();
         RecoveryTests();
+        fails += CalibrationTests.Run();
         TimeoutTests();
         try { PipeTests(); }
         catch (Exception ex) { Check("pipe infrastructure: " + ex.Message, false); }

@@ -24,7 +24,7 @@ static class T {
     var d = Config.Load();
     Check("config roundtrip", d.LimitDesired==false && d.Calibrating && d.CalibStartedUtc==c.CalibStartedUtc && d.SavedLidAction==1 && d.SavedLidScheme==c.SavedLidScheme);
     var r = new IpcResult(); r.Ok=true;
-    string body = "version=2.1.0\nfw_valid=1\nhealth_supported=1\ncalib_supported=1\nhealth_on=1\ncalib_on=0\nfw_raw=list=0x03 status=01-00-00-00-00 ret=00-00\nlimit_desired=on\ncalibrating=0\ncalib_started=\npercent=79\non_ac=1\ncharging=0\ndischarging=0\nrate_mw=0\nvoltage_mv=16420\ncurrent_ma=-12\ntemp_c=31.4\nremaining_mwh=38000\nfull_mwh=48100\ndesign_mwh=57480\ncycles=212\nmodel=SANYO AP18E8M\ncorrections_24h=2\nlast_correction=2026-11-17T10:02:00.0000000+01:00\nlast_error=\nevent_seq=3\nevent_text=x\nconflicts=Acer Quick Access Service\n";
+    string body = "version=2.2.0\nfw_valid=1\nhealth_supported=1\ncalib_supported=1\nhealth_on=1\ncalib_on=0\nfw_raw=list=0x03 status=01-00-00-00-00 ret=00-00\nlimit_desired=on\ncalibrating=0\ncalib_started=\npercent=79\non_ac=1\ncharging=0\ndischarging=0\nrate_mw=0\nvoltage_mv=16420\ncurrent_ma=-12\ntemp_c=31.4\nremaining_mwh=38000\nfull_mwh=48100\ndesign_mwh=57480\ncycles=212\nmodel=SANYO AP18E8M\ncorrections_24h=2\nlast_correction=2026-11-17T10:02:00.0000000+01:00\nlast_error=\nevent_seq=3\nevent_text=x\nconflicts=Acer Quick Access Service\n";
     foreach (string line in body.Split('\n')) { int eq=line.IndexOf('='); if(eq>0) r.Data[line.Substring(0,eq)]=line.Substring(eq+1); }
     string[] v = StatusView.Values(r);
     for (int i=0;i<v.Length;i++) Console.WriteLine("  "+StatusView.Labels[i].PadRight(30)+v[i]);

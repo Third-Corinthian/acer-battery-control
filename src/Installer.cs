@@ -238,27 +238,32 @@ namespace AcerBatteryControl
 
         // uninstall only if the journal proves nothing needs recovery. A missing or unreadable
         // journal, or one in an untrusted folder, means "unknown state": keep everything and refuse.
-        // with --force the user accepts an unknown journal state (after checking the lid
-        // action), but never an active firmware calibration.
+        // With --force the user accepts unknown journal/firmware state after checking both AC actions,
+        // but never a calibration reported active by the service or firmware.
         static void CheckNothingPending(bool force)
         {
-            CheckFirmwareNotCalibrating(force);
+            CheckNothingPending(force, AcerWmi.GetStatus, delegate { return DataDirTrust.Problem(Paths.DataDir); });
+        }
+
+        internal static void CheckNothingPending(bool force, Func<HealthStatus> readStatus, Func<string> trustProblem)
+        {
+            CheckFirmwareNotCalibrating(force, readStatus);
             if (force) return;
-            string why = DataDirTrust.Problem(Paths.DataDir);
+            string why = trustProblem();
             Config saved = why == null ? Config.LoadStrict(out why) : null;
             if (saved == null)
-                throw new AcerException("Cannot verify calibration and lid state (" + why + "): data retained, uninstall cancelled.\n"
-                    + "Check the lid close action when plugged in under Control Panel > Power Options, "
+                throw new AcerException("Cannot verify calibration and power restore state (" + why + "): data retained, uninstall cancelled.\n"
+                    + "Check the lid close and critical battery actions when plugged in under Control Panel > Power Options, "
                     + "then run from an administrator command prompt: AcerBatteryControl.exe uninstall --force");
-            if (saved.Calibrating || saved.SavedLidAction >= 0)
-                throw new AcerException("Lid restore or calibration still pending: data retained, uninstall cancelled. "
+            if (saved.Calibrating || saved.SavedLidAction >= 0 || saved.SavedCritAction >= 0)
+                throw new AcerException("Power setting restore or calibration still pending: data retained, uninstall cancelled. "
                     + "Start the service: it will complete recovery automatically.");
         }
 
-        static void CheckFirmwareNotCalibrating(bool force)
+        static void CheckFirmwareNotCalibrating(bool force, Func<HealthStatus> readStatus)
         {
             HealthStatus h = null;
-            try { h = AcerWmi.GetStatus(); }
+            try { h = readStatus(); }
             catch (Exception ex) { if (!force) throw new AcerException("Cannot read firmware state (" + ex.Message + "): uninstall cancelled."); }
             if (h != null && h.Valid && h.CalibOn)
                 throw new AcerException("The firmware reports calibration in progress: wait for it to finish or stop it, then uninstall.");

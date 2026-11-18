@@ -23,6 +23,16 @@ What the tests cover (88 checks in 2.1.0):
 - UI: late callbacks, exceptions, 500 icon redraws without handle leaks;
 - log rotation.
 
+Version 2.2.0 retains those checks and adds simulated calibration safety coverage:
+
+- two fresh floor samples, confirmed stop/readback, both setting restores and desired limit enforcement;
+- invalid and single outlier samples, charging precedence, discharge flags and negative AC rate;
+- critical write/apply/readback failures, fallback floors and an unreadable critical level;
+- low-charge cadence, telemetry timeout through simultaneous firmware failures, restore retries and recovery;
+- journal save failure, restart with and without saved calibration intent, shutdown, natural end and scheme changes;
+- strict journal validation, legacy compatibility, uninstall refusal/force semantics and tray stop blocking;
+- read-only shared warning and the real critical-write dry-run barrier.
+
 Not covered: the real SCM, real pipe and folder ACLs, UAC, the visible GUI and, above all, firmware
 writes. These need the checklist below.
 
@@ -47,6 +57,15 @@ Before installing: close Acer Care Center.
 | 13 | During calibration: the limit state in the panel | Note whether the firmware still reports the limit as active and whether the battery charges past 80%. **Missing data, to be documented in FIRMWARE.md** |
 | 14 | End of calibration (or Stop calibration) | "Calibration ended." or "Calibration stopped." event. Lid restored (powercfg). Limit reapplied. Green icon |
 | 15 | Settings > Apps > Installed apps: the "Acer Battery Control" entry is there, with version and icon. Uninstall | UAC, then service removed, Run key and Installed apps entry removed, folders deleted, message with the firmware state |
+| 16 | Before a 2.2.0 calibration, open the tray start dialog and cancel; compare with `powercfg /q SCHEME_CURRENT SUB_BATTERY BATACTIONCRIT` and `powercfg /q SCHEME_CURRENT SUB_BATTERY BATLEVELCRIT` | Warning shows the current AC action and level, hours on AC, charge to 100%, discharge, guards, safety floor, limit resumption and no unplug/shutdown. Cancelling changes nothing |
+| 17 | Start once from the tray or `acerbat calibrate start`; compare both AC and DC values with the saved pre-start readings | CLI prints the warning before requesting start, without a prompt. AC critical action and lid action are 0. DC values and critical levels are unchanged. Journal contains original actions and schemes; log records changes |
+| 18 | During a supervised discharge, observe the last part of calibration | Checks every 15 s at or below 10%. Two valid discharging readings at or below 3% cause a confirmed stop, one safety notification, both AC actions restored, normal charging resumed and charging stopped at 80% if enabled. If charging begins first, no floor stop |
+| 19 | Stop calibration normally; separately test service stop/shutdown and restart recovery with adequate charge | Both AC actions restored. Failed restores retain their journal and are retried; no limit writes while firmware calibration remains active |
+| 20 | Inspect Installed apps after upgrading to 2.2.0 | DisplayVersion is 2.2.0. Uninstall refuses pending critical-action recovery. Before using `--force`, manually restore both AC actions; reported active calibration still blocks uninstall |
+
+Steps 16–20 and the automatic floor's charging behavior are **not yet hardware-verified**. Use injected tests for
+write failures, invalid telemetry and the two-minute timeout; do not deliberately remove battery protection or
+break telemetry on the real notebook to exercise them. Preserve the observations below as historical results.
 
 ## Results on AN515-55-71UB
 

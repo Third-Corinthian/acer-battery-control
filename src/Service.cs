@@ -12,7 +12,7 @@ namespace AcerBatteryControl
     //  startup: after 20 s, 2 min, 5 min, 10 min (catch limit resets after sign-in)
     //  resume from sleep/hibernation: after 20 s
     //  power source change: after 5 s
-    //  calibration in progress or firmware not ready: every 60 s
+    //  calibration: 60 s, 15 s at low/unknown charge; firmware not ready: 60 s
     //  steady state: every 30 min
     class BatteryService : ServiceBase
     {
@@ -64,7 +64,7 @@ namespace AcerBatteryControl
             {
                 engine.Startup();
                 timer = new Timer(OnTimer, null, Timeout.Infinite, Timeout.Infinite);
-                engine.WorkRequested += delegate { ScheduleIfEarlier(60, "command"); };
+                engine.WorkRequested += delegate { ScheduleIfEarlier(engine.CalibrationPollSeconds, "command"); };
                 pipe = new PipeServer(engine);
                 pipe.Start();
                 ScheduleIfEarlier(BootOffsets[0], BootLabels[0]);
@@ -92,7 +92,7 @@ namespace AcerBatteryControl
             lock (schedLock)
             {
                 stopping = true;
-                AcerWmi.BeginStop();   // lid restore (powrprof) remains allowed
+                AcerWmi.BeginStop();   // power setting restores (powrprof) remain allowed
                 if (engine != null) engine.BeginStop();
                 plannedAt = DateTime.MaxValue;
                 try { if (timer != null) timer.Dispose(); } catch { }
@@ -175,7 +175,7 @@ namespace AcerBatteryControl
             string label;
             if (retry || engine.IsCalibrating)
             {
-                next = 60;
+                next = engine.IsCalibrating ? engine.CalibrationPollSeconds : CalibrationSafety.PollSeconds;
                 label = retry ? "retry" : "calibration";
             }
             else if (bootStep < BootOffsets.Length - 1)

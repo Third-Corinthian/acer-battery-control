@@ -10,7 +10,7 @@ command controls everything from the command line.
 ![Charge limit](https://img.shields.io/badge/charge%20limit-tested-2EA043)
 ![Calibration](https://img.shields.io/badge/calibration-tested-2EA043)
 
-**[⬇ Download AcerBatteryControl-2.1.0.zip](https://github.com/Third-Corinthian/acer-battery-control/releases/download/v2.1.0/AcerBatteryControl-2.1.0.zip)**
+**[⬇ Download AcerBatteryControl-2.2.0.zip](https://github.com/Third-Corinthian/acer-battery-control/releases/download/v2.2.0/AcerBatteryControl-2.2.0.zip)**
 (about 110 KB, no installer framework, no dependencies) · [all releases](https://github.com/Third-Corinthian/acer-battery-control/releases)
 
 > [!WARNING]
@@ -18,10 +18,10 @@ command controls everything from the command line.
 > study it, adapt it or use it. It writes to the battery firmware and changes power settings, and it comes with
 > no warranty and no promise of support. Read the [disclaimer](#disclaimer) before installing.
 >
-> **Status.** Version 2.1.0 passes 88 automated tests in simulated mode. On a Nitro 5 AN515-55 the charge limit
+> **Status.** Version 2.2.0 passes automated tests in simulated mode. On a Nitro 5 AN515-55 the charge limit
 > works: charging stops at 80%, and every on/off switch is confirmed by the firmware. Battery calibration has been
-> run too: the battery gauge was recalibrated and the limit came back on by itself afterwards. Windows'
-> critical-battery action can cut the discharge short: see [Calibration](#calibration).
+> run too: the battery gauge was recalibrated and the limit came back on by itself afterwards. The new critical-action
+> guard and automatic safety stop still need hardware validation: see [Calibration](#calibration).
 
 ## Contents
 
@@ -67,8 +67,8 @@ keeps the desired state on its own and re-applies it whenever something changes 
 
 - **Persistent 80% limit**: checked at startup, on resume from sleep, on power source changes and every
   30 minutes. It writes only after two consistent firmware reads and verifies by reading back.
-- **Calibration**, started by hand, with automatic sleep and lid-close action blocked while on AC power, both
-  restored at the end, even after a crash.
+- **Calibration**, started by hand after a clear warning, with automatic sleep blocked, AC lid and critical-battery
+  actions guarded, and an automatic low-charge safety stop. Original power settings are journaled for recovery.
 - **Telemetry**: charge, power, voltage and current, temperature, capacity and health, cycle count, conflicts
   with Acer services.
 - **Icon and panel** that fit Windows 11: light/dark theme, high DPI, status colors, notifications, service
@@ -124,7 +124,7 @@ the next person.
 ## Installation
 
 1. Download `AcerBatteryControl-<version>.zip` from the [Releases](https://github.com/Third-Corinthian/acer-battery-control/releases)
-   page and, if you like, compare its hash with `SHA256SUMS.txt` (`Get-FileHash .\AcerBatteryControl-2.1.0.zip`).
+   page and, if you like, compare its hash with `SHA256SUMS.txt` (`Get-FileHash .\AcerBatteryControl-2.2.0.zip`).
 2. Extract the zip to any folder.
 3. Optional but recommended: from an **administrator** prompt in that folder run `acerbat probe`.
    It should print `BatteryControl found.` and `80% limit   supported: True`.
@@ -197,19 +197,34 @@ Calibration makes the charge indicator accurate again. Lithium batteries have no
 way to "train" the battery. The firmware charges the battery to 100%, discharges it with the system running and
 charges it again: it takes several hours with the charger always plugged in. It is started **only by hand**.
 
-During calibration the service suspends the limit without touching it, blocks automatic sleep, sets "lid close =
-do nothing" (on AC power only) and warns you if you unplug the charger. At the end it restores everything and
-re-applies the limit. Do not shut down or restart the PC during calibration.
+Before starting, the tray asks for confirmation and `acerbat calibrate start` prints the same explanation without
+an interactive prompt. It shows the current AC critical-battery action and level, for example "Hibernate at 5%",
+read without changing any settings.
+
+During calibration the service leaves the limit untouched, blocks automatic sleep, and temporarily sets both
+the lid-close action and the critical-battery action to **Do nothing on AC power only**. The original actions and
+their power schemes are saved before changes. Battery-power (DC) settings and critical battery levels are never
+changed. Keep the charger connected; do not shut down, restart or put the PC to sleep.
 
 During calibration the firmware charges the battery to 100% even when the 80% limit is on: this is expected.
 
-> [!TIP]
-> Before starting, check what Windows does when the battery is almost empty: Control Panel > Power Options >
-> Change plan settings > Change advanced power settings > Battery > "Critical battery action" and "Critical
-> battery level". With a typical setting such as "Hibernate" at 5%, Windows shuts the PC down before the firmware
-> reaches the end of the discharge, so its final recharge does not run in calibration mode. In testing the
-> battery gauge was recalibrated anyway, and at the next start the service noticed that calibration was over and
-> switched the 80% limit back on.
+If the firmware is still calibrating and discharging at **3% or below on two consecutive valid readings**, the
+service stops calibration using confirmed firmware reads and readback. It restores the power settings and resumes
+normal limit control so charging can resume, limited to 80% if enabled. A tray notification explains the stop.
+If the firmware begins recharging first, it is allowed to finish. The safety stop deliberately ends calibration
+before a full firmware discharge/recharge cycle; its effect on gauge accuracy needs hardware testing.
+
+If the critical action cannot be changed, the fallback floor is the current AC critical level plus two percentage
+points (at least 3%, at most 100%). If that level cannot be read, Windows protection is retained and calibration
+is stopped on two valid discharge readings. Polling is normally every 60 seconds, every 15 seconds at 10% or
+below, at the fallback floor, or when telemetry is invalid.
+
+Invalid telemetry never triggers a firmware stop. If valid data is missing for more than two minutes, the service
+restores the original critical action and keeps it for the rest of that calibration, even if telemetry returns.
+This rule also applies when the last known charge was above 10%, because an unseen discharge could cross it.
+Windows may then sleep or shut down; its protection takes priority over finishing calibration. Restore failures
+retain the journal and are retried. Settings are also restored at normal completion, manual stop, service stop,
+Windows shutdown, and recovery after a crash at the next service start.
 
 ## Security
 
@@ -229,9 +244,11 @@ From **Settings > Apps > Installed apps > Acer Battery Control > Uninstall**, or
 `AcerBatteryControl.exe uninstall` / `acerbat uninstall` from an administrator prompt. This removes the service,
 the icon autostart, the Installed apps entry and the folders.
 
-Uninstalling refuses, and leaves the service running, if a calibration is in progress, a lid-action restore is
-pending or the service does not respond. If the state file (`config.ini`) has been lost, check the lid-close
-action in Power Options and use `AcerBatteryControl.exe uninstall --force`.
+Uninstalling refuses, and leaves the service running, if a calibration is in progress, a lid or critical-action
+restore is pending or the service does not respond. If the state file (`config.ini`) has been lost, check and
+restore both AC actions in Power Options before using `AcerBatteryControl.exe uninstall --force`. This override
+accepts a missing, invalid or pending journal and unreadable firmware state; it never bypasses calibration
+reported active by the service or firmware. It does not restore settings on your behalf.
 
 The firmware state is left as it is: to go back to charging to 100%, run `acerbat limit off` first.
 
@@ -260,8 +277,9 @@ Developer documentation:
 
 ## Known limitations
 
-- Windows' critical-battery action can end a calibration before the end of the discharge (see
-  [Calibration](#calibration)); the program does not change that setting.
+- The 3% safety stop and subsequent charging have been tested with simulated hardware only. A sudden charge drop,
+  stalled driver, firmware cutoff, policy override or failed restore can still cause shutdown. The two-minute
+  telemetry timeout deliberately returns control to Windows; it cannot guarantee uninterrupted calibration.
 - The firmware offers only the fixed 80% threshold.
 - On the AN515-55 the cycle count is not reported.
 - Sleep started by hand during a calibration is not blocked; stopping the service from `services.msc` during a

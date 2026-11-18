@@ -9,8 +9,8 @@ using System.Windows.Forms;
 [assembly: AssemblyTitle("Acer Battery Control")]
 [assembly: AssemblyProduct("Acer Battery Control")]
 [assembly: AssemblyDescription("80% charge limit and battery calibration for Acer laptops, without Acer Care Center")]
-[assembly: AssemblyVersion("2.1.0.0")]
-[assembly: AssemblyFileVersion("2.1.0.0")]
+[assembly: AssemblyVersion("2.2.0.0")]
+[assembly: AssemblyFileVersion("2.2.0.0")]
 [assembly: System.Runtime.Versioning.TargetFramework(".NETFramework,Version=v4.8")]
 
 namespace AcerBatteryControl
@@ -88,8 +88,9 @@ namespace AcerBatteryControl
                 return Util.RunElevated(Util.ExePath, cmd + (force ? " --force" : ""), false) ? 0 : 1;
             try
             {
-                if (force && MessageBox.Show("Uninstall without checking the calibration and lid journal?\n\n"
-                        + "First check the lid close action when plugged in under Power Options.",
+                if (force && MessageBox.Show("Uninstall without checking the calibration and power setting journal?\n\n"
+                        + "First check the lid close and critical battery actions when plugged in under Power Options. "
+                        + "A reported firmware calibration still blocks uninstall.",
                         Paths.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes)
                     return 1;
                 string msg = cmd == "install" ? Installer.Install() : Installer.Uninstall(force);
@@ -132,7 +133,11 @@ namespace AcerBatteryControl
                         if (arg == "off") return Simple("LIMIT OFF");
                         break;
                     case "calibrate":
-                        if (arg == "start") return Simple("CALIBRATE START");
+                        if (arg == "start")
+                        {
+                            Console.WriteLine(CalibrationSafety.Warning(new PowerAccess()));
+                            return Simple("CALIBRATE START");
+                        }
                         if (arg == "stop") return Simple("CALIBRATE STOP");
                         break;
                     case "enforce": return Simple("ENFORCE");
