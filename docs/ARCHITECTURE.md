@@ -120,8 +120,11 @@ with "Acer" or "Care Center" in their name) are for diagnosis.
   Normal enforcement then resumes.
 - **AC adapter unplugged during calibration**: detected by comparing `lastAc` with the telemetry.
   It raises a "WARNING" notification, which the tray shows with the warning icon.
-- As in acerctl, the 80% limit is not touched. It is not known whether the firmware ignores it during
-  calibration: this must be verified in the field (`docs/TESTING.md`).
+- As in acerctl, the 80% limit is not touched. Observed on the AN515-55: during calibration the firmware
+  charges to 100% even with the limit active (`docs/TESTING.md`).
+- **Windows shutdown during calibration** (for example the critical-battery action): the service logs it,
+  releases the guards and keeps `calibrating=1`; at the next start it reads the firmware, finds calibration
+  off and resumes normal enforcement.
 
 ## IPC
 
@@ -256,7 +259,9 @@ It does not change the firmware state. When launched from the installation folde
 
 ## Open decisions / TODO
 
-- Verify in the field how calibration and an active 80% limit interact (see TESTING).
+- Windows' critical-battery action (for example hibernate at 5%) ends calibration before the end of the
+  discharge. Options: warn before starting, showing the current action and level; or change it temporarily
+  with a journal and restore, like the lid action (risk: abrupt power-off at 0%).
 - Code signing: the executables are not signed and SmartScreen warns.
 - Possible addition: blocking user-requested sleep during calibration. Today only automatic sleep
   is blocked.

@@ -80,7 +80,9 @@ Adaptive charging ("BAC"). Not used. On ANV15-52 they return ReturnCode 1.
 - **Calibration**: the firmware discharges the battery by running the system. A sleep halts the
   discharge, a shutdown interrupts it abruptly. acerctl holds a sleep and lid inhibitor for the whole
   duration and requires the AC adapter at start. The same is done here: see
-  `CalibrationGuards`.
+  `CalibrationGuards`. Observed on the AN515-55: the firmware charges to 100% even with the 80% limit on,
+  then discharges; after a shutdown at 5% (Windows' critical-battery action) it reported calibration off at
+  the next boot, and the battery gauge had recalculated the full charge capacity.
 - **80% limit**: if it is enabled above 80%, the battery is not discharged. Charging stops and
   resumes when the level drops below the threshold. The threshold is fixed and not configurable.
 

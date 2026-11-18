@@ -8,7 +8,7 @@ command controls everything from the command line.
 ![.NET Framework](https://img.shields.io/badge/.NET%20Framework-4.8-512BD4)
 ![License](https://img.shields.io/badge/license-GPL--3.0-blue)
 ![Charge limit](https://img.shields.io/badge/charge%20limit-tested-2EA043)
-![Calibration](https://img.shields.io/badge/calibration-untested-orange)
+![Calibration](https://img.shields.io/badge/calibration-tested-2EA043)
 
 **[⬇ Download AcerBatteryControl-2.1.0.zip](https://github.com/Third-Corinthian/acer-battery-control/releases/download/v2.1.0/AcerBatteryControl-2.1.0.zip)**
 (about 110 KB, no installer framework, no dependencies) · [all releases](https://github.com/Third-Corinthian/acer-battery-control/releases)
@@ -19,8 +19,9 @@ command controls everything from the command line.
 > no warranty and no promise of support. Read the [disclaimer](#disclaimer) before installing.
 >
 > **Status.** Version 2.1.0 passes 88 automated tests in simulated mode. On a Nitro 5 AN515-55 the charge limit
-> works: charging stops at 80%, and every on/off switch is confirmed by the firmware. **Battery calibration has
-> not been tested on real hardware yet.**
+> works: charging stops at 80%, and every on/off switch is confirmed by the firmware. Battery calibration has been
+> run too: the battery gauge was recalibrated and the limit came back on by itself afterwards. Windows'
+> critical-battery action can cut the discharge short: see [Calibration](#calibration).
 
 ## Contents
 
@@ -88,7 +89,7 @@ System: 64-bit Windows 10 or 11.
 
 | Model | Result |
 |---|---|
-| Nitro 5 AN515-55 (AN515-55-71UB), Windows 11 | Charge limit works: charging stops at 80%, every on/off switch confirmed by the firmware. Calibration not tested yet |
+| Nitro 5 AN515-55 (AN515-55-71UB), Windows 11 | Charge limit works: charging stops at 80%, every on/off switch confirmed by the firmware. Calibration works: full charge, discharge, battery gauge recalibrated, limit restored afterwards |
 
 ### Probably compatible
 
@@ -200,6 +201,16 @@ During calibration the service suspends the limit without touching it, blocks au
 do nothing" (on AC power only) and warns you if you unplug the charger. At the end it restores everything and
 re-applies the limit. Do not shut down or restart the PC during calibration.
 
+During calibration the firmware charges the battery to 100% even when the 80% limit is on: this is expected.
+
+> [!TIP]
+> Before starting, check what Windows does when the battery is almost empty: Control Panel > Power Options >
+> Change plan settings > Change advanced power settings > Battery > "Critical battery action" and "Critical
+> battery level". With a typical setting such as "Hibernate" at 5%, Windows shuts the PC down before the firmware
+> reaches the end of the discharge, so its final recharge does not run in calibration mode. In testing the
+> battery gauge was recalibrated anyway, and at the next start the service noticed that calibration was over and
+> switched the 80% limit back on.
+
 ## Security
 
 The service runs as LocalSystem. In short:
@@ -249,7 +260,8 @@ Developer documentation:
 
 ## Known limitations
 
-- Calibration has not been tested on real hardware yet: see the warning at the top.
+- Windows' critical-battery action can end a calibration before the end of the discharge (see
+  [Calibration](#calibration)); the program does not change that setting.
 - The firmware offers only the fixed 80% threshold.
 - On the AN515-55 the cycle count is not reported.
 - Sleep started by hand during a calibration is not blocked; stopping the service from `services.msc` during a

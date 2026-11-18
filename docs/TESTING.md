@@ -60,7 +60,9 @@ Before installing: close Acer Care Center.
 | 2026-11-17 | 7 | OK. Limit turned back on from the app; the firmware confirmed the write (`uReturn=0`) |
 | 2026-11-17 | 8 | Note. 10 minutes after start the service found the limit off and re-enabled it: something resets the limit after boot. See "Possible conflicts" in the panel; to be investigated |
 | 2026-11-17 | 6–7 | OK. With the limit on and the charger plugged in, charging stopped at 80% |
-| — | 12–14 | Not tested yet (calibration) |
+| 2026-11-18 | 12 | OK. Calibration started from the app; the firmware confirmed the command (`uReturn=0`); automatic sleep blocked |
+| 2026-11-18 | 13 | OK. The battery charged to 100% with the 80% limit on, then discharged with the system running. Whether the firmware kept reporting the limit as active was not recorded |
+| 2026-11-18 | 14 | Partial. At 5% Windows' critical-battery action (hibernate at 5% in the active plan) shut the PC down: the service logged the shutdown with calibration in progress and released its guards. At the next start the firmware reported calibration off and the service re-enabled the limit (`uReturn=0`); no lid restore pending. Battery health after calibration: 68% (72% before): the gauge recalculated the full capacity |
 | — | 15 | Not tested yet (uninstall) |
 
 ## Useful data to collect
