@@ -24,6 +24,9 @@ and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - Calibration no longer silently relies on Windows' AC critical-battery action during the discharge phase.
   The guarded safety stop is intended to allow charging to resume before shutdown; hardware validation is pending.
+- Double-clicking a newer `AcerBatteryControl.exe` while a version is installed did nothing (it exited silently
+  when the tray icon was running). It now offers to update, closing the running icon and service.
+- Installing or updating is refused while a calibration is reported in progress.
 
 ## [2.1.0] — 2026-11-17
 

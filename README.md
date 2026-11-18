@@ -139,6 +139,15 @@ the next person.
 Windows SmartScreen may warn you because the executables are not signed ("More info" > "Run anyway").
 Alternatively, [build them yourself](#building-from-source).
 
+### Updating
+
+Extract the new zip and double-click its `AcerBatteryControl.exe`: it detects the installed version and asks
+whether to update. On **Yes** (and UAC), setup stops the service, closes the tray icon, replaces the files and
+keeps your settings, then starts everything again. Updating is refused while a calibration is running.
+
+Versions up to 2.1.0 do not offer this when double-clicked (they exit silently if the icon is running). To update
+from them, open an **administrator** prompt in the extracted folder and run `.\AcerBatteryControl.exe install`.
+
 ## Usage
 
 ### Icon

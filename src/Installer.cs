@@ -290,7 +290,14 @@ namespace AcerBatteryControl
             StringBuilder report = new StringBuilder();
 
             bool exists = ServiceExists();
-            if (exists) StopService();
+            if (exists)
+            {
+                // An update stops the service: refuse while it reports a calibration, so the guards are not interrupted.
+                IpcResult status = Ipc.Call("STATUS", 3000);
+                if (status.Ok && (status.Get("calibrating") == "1" || status.Get("calib_on") == "1"))
+                    throw new AcerException("A calibration is in progress: update after it ends, or stop it first from the tray menu.");
+                StopService();
+            }
             KillOtherInstances();
 
             string srcDir = Path.GetDirectoryName(Util.ExePath);

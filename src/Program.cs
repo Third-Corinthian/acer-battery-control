@@ -57,6 +57,20 @@ namespace AcerBatteryControl
             if (cmd == "install" || cmd == "uninstall")
                 return RunSetup(cmd, args.Length > 1 && args[1].ToLowerInvariant() == "--force");
 
+            // A copy outside the installation folder, with the service already installed, is an update:
+            // offer it before the single-instance check, which would otherwise exit silently.
+            if (cmd.Length == 0 && !IsInstalledCopy() && Installer.ServiceExists())
+            {
+                string installed = InstalledVersion();
+                DialogResult u = MessageBox.Show(
+                    "Acer Battery Control " + (installed.Length > 0 ? installed + " " : "") + "is already installed.\n\n" +
+                    "Update it to version " + Paths.Version + "? The service and the tray icon are stopped, the files in " +
+                    Paths.InstallDir + " are replaced and your settings are kept. Administrator confirmation is required.",
+                    Paths.AppName, MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+                if (u == DialogResult.Yes) Util.RunElevated(Util.ExePath, "install", false);
+                return 0;
+            }
+
             bool created;
             using (Mutex m = new Mutex(true, "Local\\AcerBatteryControlTray", out created))
             {
@@ -80,6 +94,28 @@ namespace AcerBatteryControl
                 finally { try { tray.Dispose(); } catch { } }   // The icon disappears from the notification area.
             }
             return 0;
+        }
+
+        static bool IsInstalledCopy()
+        {
+            try
+            {
+                return string.Equals(System.IO.Path.GetFullPath(Util.ExePath),
+                    System.IO.Path.GetFullPath(System.IO.Path.Combine(Paths.InstallDir, Paths.GuiExeName)),
+                    StringComparison.OrdinalIgnoreCase);
+            }
+            catch { return false; }
+        }
+
+        static string InstalledVersion()
+        {
+            try
+            {
+                string v = System.Diagnostics.FileVersionInfo.GetVersionInfo(
+                    System.IO.Path.Combine(Paths.InstallDir, Paths.GuiExeName)).FileVersion;
+                return v == null ? "" : v.Trim();
+            }
+            catch { return ""; }
         }
 
         static int RunSetup(string cmd, bool force)

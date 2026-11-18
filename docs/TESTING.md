@@ -62,6 +62,7 @@ Before installing: close Acer Care Center.
 | 18 | During a supervised discharge, observe the last part of calibration | Checks every 15 s at or below 10%. Two valid discharging readings at or below 3% cause a confirmed stop, one safety notification, both AC actions restored, normal charging resumed and charging stopped at 80% if enabled. If charging begins first, no floor stop |
 | 19 | Stop calibration normally; separately test service stop/shutdown and restart recovery with adequate charge | Both AC actions restored. Failed restores retain their journal and are retried; no limit writes while firmware calibration remains active |
 | 20 | Inspect Installed apps after upgrading to 2.2.0 | DisplayVersion is 2.2.0. Uninstall refuses pending critical-action recovery. Before using `--force`, manually restore both AC actions; reported active calibration still blocks uninstall |
+| 21 | With an older version installed and its tray icon running, double-click the new `AcerBatteryControl.exe` from the extracted zip | A dialog shows the installed and new versions. Yes + UAC: service stopped, old icon closed, files replaced, settings kept, service and icon started again. During a calibration the update is refused with a message |
 
 Steps 16–20 and the automatic floor's charging behavior are **not yet hardware-verified**. Use injected tests for
 write failures, invalid telemetry and the two-minute timeout; do not deliberately remove battery protection or

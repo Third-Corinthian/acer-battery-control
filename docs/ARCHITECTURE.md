@@ -261,7 +261,14 @@ are blocked as well.
 `Installer.Install()` requires administrator rights and performs these steps:
 
 1. Checks that the firmware exposes `BatteryControl`; if it is missing, installation stops.
-2. Stops the service if it already exists, closes the other instances, copies the exe, DPI configuration and README into `%ProgramFiles%\AcerBatteryControl`.
+2. If the service already exists, asks it for `STATUS` and refuses while a calibration is reported; otherwise
+   stops the service, closes the other instances, copies the exe, DPI configuration and README into
+   `%ProgramFiles%\AcerBatteryControl`.
+
+Launched without arguments from a folder other than the installation folder while the service exists, the
+GUI exe treats the launch as an update: it shows the installed and new versions and, on confirmation, runs
+`install` elevated. This check comes before the single-instance mutex, which would otherwise make the second
+copy exit silently while the tray icon is running.
 3. Deletes the `AcerChargeLimit` task if present, to prevent it from competing with the service.
 4. Protects `%ProgramData%\AcerBatteryControl` with `DataDirTrust.Secure` (the service also does this at every
    start, before reading the configuration or writing the log):
